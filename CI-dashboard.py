@@ -16,13 +16,11 @@ import streamlit as st
 import requests
 from datetime import datetime
 
-st.set_page_config(page_title="Pharma CI Dashboard", layout="wide")
-
 BASE_URL = "https://clinicaltrials.gov/api/v2/studies"
 
-# ---------------------------------
-# Phase label mapping (UI friendly)
-# ---------------------------------
+# -------------------------------
+# Phase label mapping
+# -------------------------------
 PHASE_LABELS = {
     "EARLY_PHASE1": "Early Phase 1",
     "PHASE_1": "Phase 1",
@@ -34,9 +32,9 @@ PHASE_LABELS = {
 LABEL_TO_PHASE = {v: k for k, v in PHASE_LABELS.items()}
 
 
-# ---------------------------------
-# Fetch Alzheimer trials (v2 API)
-# ---------------------------------
+# -------------------------------
+# Fetch Alzheimer trials
+# -------------------------------
 @st.cache_data(ttl=86400)
 def fetch_trials():
     trials = []
@@ -56,16 +54,15 @@ def fetch_trials():
 
         trials.extend(data.get("studies", []))
         token = data.get("nextPageToken")
-
         if not token:
             break
 
     return trials
 
 
-# ---------------------------------
-# Parse trial safely + extract year
-# ---------------------------------
+# -------------------------------
+# Parse trial safely
+# -------------------------------
 def parse_trial(study):
     ps = study.get("protocolSection", {})
 
@@ -74,59 +71,61 @@ def parse_trial(study):
     dm = ps.get("designModule", {})
     sp = ps.get("sponsorCollaboratorsModule", {})
     em = ps.get("enrollmentModule", {})
+    lm = ps.get("contactsLocationsModule", {})
 
-    first_posted = sm.get("studyFirstPostDate")
+    # Year
     year = None
     try:
-        year = datetime.strptime(first_posted, "%Y-%m-%d").year
+        year = datetime.strptime(
+            sm.get("studyFirstPostDate", ""),
+            "%Y-%m-%d"
+        ).year
     except:
         pass
+
+    # Countries
+    countries = sorted(
+        {
+            loc.get("country")
+            for loc in lm.get("locations", [])
+            if loc.get("country")
+        }
+    )
 
     return {
         "NCT": idm.get("nctId"),
         "Title": idm.get("officialTitle"),
         "Phases": dm.get("phases") or [],
-        "Status": sm.get("overallStatus"),
+        "Status": (sm.get("overallStatus") or "").strip(),
         "Sponsor": sp.get("leadSponsor", {}).get("name"),
         "SponsorType": sp.get("leadSponsor", {}).get("class"),
         "Enrollment": em.get("count"),
         "Year": year,
+        "Countries": countries,
     }
 
 
-# ---------------------------------
+# -------------------------------
 # PIPELINE UI
-# ---------------------------------
+# -------------------------------
 st.header("🧠 Alzheimer’s Disease Clinical Trial Pipeline")
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
-    phase_label = st.selectbox(
-        "Phase",
-        ["All"] + list(PHASE_LABELS.values())
-    )
+    phase_label = st.selectbox("Phase", ["All"] + list(PHASE_LABELS.values()))
     phase_filter = LABEL_TO_PHASE.get(phase_label)
 
 with col2:
     status = st.selectbox(
         "Recruitment Status",
-        [
-            "All",
-            "Not yet recruiting",
-            "Recruiting",
-            "Completed",
-            "Withdrawn",
-            "Terminated",
-            "Suspended",
-        ]
+        ["All", "Not yet recruiting", "Recruiting", "Completed",
+         "Withdrawn", "Terminated", "Suspended", "Unknown"]
     )
+    status_norm = status.lower()
 
 with col3:
-    sponsor_type = st.selectbox(
-        "Sponsor Type",
-        ["All", "INDUSTRY", "NIH", "OTHER"]
-    )
+    sponsor_type = st.selectbox("Sponsor Type", ["All", "INDUSTRY", "NIH", "OTHER"])
 
 with col4:
     year_filter = st.selectbox(
@@ -134,34 +133,57 @@ with col4:
         ["All"] + [str(y) for y in range(2010, 2026)]
     )
 
+with col5:
+    country_filter = st.selectbox("Country", ["All"])
+
 st.divider()
 
-# ---------------------------------
-# Load & filter trials
-# ---------------------------------
+# -------------------------------
+# Load & enrich data
+# -------------------------------
 parsed_trials = [parse_trial(t) for t in fetch_trials()]
-filtered = []
 
+# Populate country dropdown dynamically
+all_countries = sorted(
+    {c for t in parsed_trials for c in t["Countries"]}
+)
+country_filter = st.selectbox("Country", ["All"] + all_countries)
+
+# -------------------------------
+# Filtering (ROBUST)
+# -------------------------------
+filtered = []
 for t in parsed_trials:
-    # Phase filter
+
+    # Phase
     if phase_label != "All" and t["Phases"]:
         if phase_filter not in t["Phases"]:
             continue
 
-    if status != "All" and t["Status"] != status:
-        continue
+    # Status (case-insensitive)
+    if status != "All":
+        if t["Status"].lower() != status_norm:
+            continue
 
+    # Sponsor type
     if sponsor_type != "All" and t["SponsorType"] != sponsor_type:
         continue
 
-    if year_filter != "All" and t["Year"] != int(year_filter):
-        continue
+    # Year (only if year exists)
+    if year_filter != "All":
+        if t["Year"] is None or t["Year"] != int(year_filter):
+            continue
+
+    # Country
+    if country_filter != "All":
+        if country_filter not in t["Countries"]:
+            continue
 
     filtered.append(t)
 
-# ---------------------------------
+# -------------------------------
 # Output
-# ---------------------------------
+# -------------------------------
 st.subheader(f"Filtered Trials ({len(filtered)})")
 
 if not filtered:
@@ -181,7 +203,8 @@ else:
 **Status:** {t['Status']}  
 **Sponsor:** {t['Sponsor']}  
 **Enrollment:** {t['Enrollment']}  
-**First Posted Year:** {t['Year']}
+**First Posted Year:** {t['Year']}  
+**Countries:** {", ".join(t["Countries"]) if t["Countries"] else "Not specified"}
 """
         )
         st.markdown(
