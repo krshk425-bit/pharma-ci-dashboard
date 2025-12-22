@@ -14,13 +14,15 @@ pipeline_tab, news_tab, congress_tab = st.tabs(["Pipeline", "News", "Congress Pl
 # ---------------- Pipeline Tab ----------------
 import streamlit as st
 import requests
-from datetime import date, datetime
+from datetime import datetime
+
+st.set_page_config(page_title="Pharma CI Dashboard", layout="wide")
 
 BASE_URL = "https://clinicaltrials.gov/api/v2/studies"
 
-# -------------------------------
-# Phase label mapping
-# -------------------------------
+# ---------------------------------
+# Phase label mapping (UI friendly)
+# ---------------------------------
 PHASE_LABELS = {
     "EARLY_PHASE1": "Early Phase 1",
     "PHASE_1": "Phase 1",
@@ -29,13 +31,12 @@ PHASE_LABELS = {
     "PHASE_2_3": "Phase 2/3",
     "PHASE_3": "Phase 3",
 }
-
 LABEL_TO_PHASE = {v: k for k, v in PHASE_LABELS.items()}
 
 
-# -------------------------------
-# FETCH ALL ALZHEIMER TRIALS
-# -------------------------------
+# ---------------------------------
+# Fetch Alzheimer trials (v2 API)
+# ---------------------------------
 @st.cache_data(ttl=86400)
 def fetch_trials():
     trials = []
@@ -62,9 +63,9 @@ def fetch_trials():
     return trials
 
 
-# -------------------------------
-# PARSE STUDY (SAFE)
-# -------------------------------
+# ---------------------------------
+# Parse trial safely + extract year
+# ---------------------------------
 def parse_trial(study):
     ps = study.get("protocolSection", {})
 
@@ -73,92 +74,99 @@ def parse_trial(study):
     dm = ps.get("designModule", {})
     sp = ps.get("sponsorCollaboratorsModule", {})
     em = ps.get("enrollmentModule", {})
-    om = ps.get("outcomesModule", {})
 
-    post_date = None
+    first_posted = sm.get("studyFirstPostDate")
+    year = None
     try:
-        post_date = datetime.strptime(
-            sm.get("studyFirstPostDate", ""),
-            "%Y-%m-%d"
-        ).date()
+        year = datetime.strptime(first_posted, "%Y-%m-%d").year
     except:
         pass
 
     return {
         "NCT": idm.get("nctId"),
         "Title": idm.get("officialTitle"),
-        "Phases": dm.get("phases") or [],   # always list
+        "Phases": dm.get("phases") or [],
         "Status": sm.get("overallStatus"),
         "Sponsor": sp.get("leadSponsor", {}).get("name"),
         "SponsorType": sp.get("leadSponsor", {}).get("class"),
         "Enrollment": em.get("count"),
-        "PostDate": post_date,
-        "Outcomes": om,
+        "Year": year,
     }
 
 
-# -------------------------------
-# PIPELINE TAB
-# -------------------------------
-def pipeline_tab():
-    st.header("🧠 Alzheimer’s Disease Clinical Trial Pipeline")
+# ---------------------------------
+# PIPELINE UI
+# ---------------------------------
+st.header("🧠 Alzheimer’s Disease Clinical Trial Pipeline")
 
-    col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
-    with col1:
-        phase_label = st.selectbox(
-            "Phase",
-            ["All"] + list(PHASE_LABELS.values())
-        )
-        phase_filter = LABEL_TO_PHASE.get(phase_label)
+with col1:
+    phase_label = st.selectbox(
+        "Phase",
+        ["All"] + list(PHASE_LABELS.values())
+    )
+    phase_filter = LABEL_TO_PHASE.get(phase_label)
 
-    with col2:
-        status = st.selectbox(
-            "Recruitment Status",
-            ["All", "Not yet recruiting", "Recruiting", "Completed",
-             "Withdrawn", "Terminated", "Suspended"]
-        )
+with col2:
+    status = st.selectbox(
+        "Recruitment Status",
+        [
+            "All",
+            "Not yet recruiting",
+            "Recruiting",
+            "Completed",
+            "Withdrawn",
+            "Terminated",
+            "Suspended",
+        ]
+    )
 
-    with col3:
-        sponsor_type = st.selectbox(
-            "Sponsor Type",
-            ["All", "INDUSTRY", "NIH", "OTHER"]
-        )
+with col3:
+    sponsor_type = st.selectbox(
+        "Sponsor Type",
+        ["All", "INDUSTRY", "NIH", "OTHER"]
+    )
 
-    from_date = st.date_input("From Date", date(2020, 1, 1))
-    to_date = st.date_input("To Date", date(2025, 12, 31))
+with col4:
+    year_filter = st.selectbox(
+        "Year (First Posted)",
+        ["All"] + [str(y) for y in range(2010, 2026)]
+    )
 
-    st.divider()
+st.divider()
 
-    trials = [parse_trial(t) for t in fetch_trials()]
+# ---------------------------------
+# Load & filter trials
+# ---------------------------------
+parsed_trials = [parse_trial(t) for t in fetch_trials()]
+filtered = []
 
-    filtered = []
-    for t in trials:
-        if not t["PostDate"]:
+for t in parsed_trials:
+    # Phase filter
+    if phase_label != "All" and t["Phases"]:
+        if phase_filter not in t["Phases"]:
             continue
 
-        # Phase filter (handles missing phases)
-        if phase_label != "All":
-            if t["Phases"] and phase_filter not in t["Phases"]:
-                continue
+    if status != "All" and t["Status"] != status:
+        continue
 
-        if status != "All" and t["Status"] != status:
-            continue
+    if sponsor_type != "All" and t["SponsorType"] != sponsor_type:
+        continue
 
-        if sponsor_type != "All" and t["SponsorType"] != sponsor_type:
-            continue
+    if year_filter != "All" and t["Year"] != int(year_filter):
+        continue
 
-        if not (from_date <= t["PostDate"] <= to_date):
-            continue
+    filtered.append(t)
 
-        filtered.append(t)
+# ---------------------------------
+# Output
+# ---------------------------------
+st.subheader(f"Filtered Trials ({len(filtered)})")
 
-    st.subheader(f"Filtered Trials ({len(filtered)})")
-
-    if not filtered:
-        st.warning("No trials found for selected filters.")
-        return
-
+if not filtered:
+    st.warning("No trials found for selected filters.")
+else:
     for t in filtered:
         phase_display = (
             ", ".join(PHASE_LABELS.get(p, p) for p in t["Phases"])
@@ -171,26 +179,16 @@ def pipeline_tab():
 **NCT ID:** {t['NCT']}  
 **Phase:** {phase_display}  
 **Status:** {t['Status']}  
-**Enrollment:** {t['Enrollment']}  
 **Sponsor:** {t['Sponsor']}  
-**First Posted:** {t['PostDate']}  
+**Enrollment:** {t['Enrollment']}  
+**First Posted Year:** {t['Year']}
 """
         )
-
-        for o in t["Outcomes"].get("primaryOutcomes", []):
-            st.markdown(f"- **Primary:** {o.get('measure')} ({o.get('timeFrame')})")
-
-        for o in t["Outcomes"].get("secondaryOutcomes", []):
-            st.markdown(f"- **Secondary:** {o.get('measure')} ({o.get('timeFrame')})")
-
         st.markdown(
             f"[View on ClinicalTrials.gov]"
             f"(https://clinicaltrials.gov/study/{t['NCT']})"
         )
         st.divider()
-
-
-pipeline_tab()
 
 
 
