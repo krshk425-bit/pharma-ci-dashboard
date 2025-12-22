@@ -227,7 +227,7 @@ with congress_tab:
     st.write("Location and date filters with event list")
 
     location = st.selectbox("Select location", ["Global", "Europe", "US", "Asia"])
-    date_range = st.date_input("Select date range", [datetime.date(2026, 1, 1), datetime.date(2026, 12, 31)])
+    
 
     congress_data = [
         ["AAIC 2026", "July 12–15, 2026", "London, UK", "https://aaic.alz.org/abstracts/overview.asp"],
