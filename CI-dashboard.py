@@ -32,10 +32,10 @@ PHASE_LABELS = {
 LABEL_TO_PHASE = {v: k for k, v in PHASE_LABELS.items()}
 
 # -------------------------------
-# Time window: last 14 days
+# Time window: past 3 months
 # -------------------------------
 TODAY = datetime.utcnow().date()
-PAST_14_DAYS = TODAY - timedelta(days=14)
+PAST_3_MONTHS = TODAY - timedelta(days=90)
 
 # -------------------------------
 # Fetch Alzheimer trials
@@ -111,7 +111,7 @@ def parse_trial(study):
 # -------------------------------
 st.header("🧠 Alzheimer’s Disease Clinical Trial Pipeline")
 
-st.caption("Showing trials first posted in the **past 14 days**")
+st.caption("Showing trials first posted in the **past 3 months**")
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -147,8 +147,8 @@ country_filter = st.selectbox("Country", ["All"] + all_countries)
 filtered = []
 for t in parsed_trials:
 
-    # Time filter: past 14 days
-    if not t["PostDate"] or t["PostDate"] < PAST_14_DAYS:
+    # Time filter: past 3 months
+    if not t["PostDate"] or t["PostDate"] < PAST_3_MONTHS:
         continue
 
     # Phase filter
@@ -164,7 +164,7 @@ for t in parsed_trials:
     if sponsor_type != "All" and t["SponsorType"] != sponsor_type:
         continue
 
-    # Country
+    # Country filter
     if country_filter != "All" and country_filter not in t["Countries"]:
         continue
 
@@ -176,7 +176,7 @@ for t in parsed_trials:
 st.subheader(f"Filtered Trials ({len(filtered)})")
 
 if not filtered:
-    st.info("No Alzheimer’s trials were first posted in the past 14 days.")
+    st.info("No Alzheimer’s trials were first posted in the past 3 months.")
 else:
     for t in filtered:
         phase_display = (
