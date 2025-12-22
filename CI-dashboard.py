@@ -18,9 +18,24 @@ from datetime import date, datetime
 
 BASE_URL = "https://clinicaltrials.gov/api/v2/studies"
 
-# --------------------------------------------------
-# FETCH ALL ALZHEIMER TRIALS (v2 API, PAGINATED)
-# --------------------------------------------------
+# -------------------------------
+# Phase label mapping
+# -------------------------------
+PHASE_LABELS = {
+    "EARLY_PHASE1": "Early Phase 1",
+    "PHASE_1": "Phase 1",
+    "PHASE_1_2": "Phase 1/2",
+    "PHASE_2": "Phase 2",
+    "PHASE_2_3": "Phase 2/3",
+    "PHASE_3": "Phase 3",
+}
+
+LABEL_TO_PHASE = {v: k for k, v in PHASE_LABELS.items()}
+
+
+# -------------------------------
+# FETCH ALL ALZHEIMER TRIALS
+# -------------------------------
 @st.cache_data(ttl=86400)
 def fetch_trials():
     trials = []
@@ -47,9 +62,9 @@ def fetch_trials():
     return trials
 
 
-# --------------------------------------------------
-# SAFE PARSER (NO CRASHES)
-# --------------------------------------------------
+# -------------------------------
+# PARSE STUDY (SAFE)
+# -------------------------------
 def parse_trial(study):
     ps = study.get("protocolSection", {})
 
@@ -60,7 +75,6 @@ def parse_trial(study):
     em = ps.get("enrollmentModule", {})
     om = ps.get("outcomesModule", {})
 
-    # Date parsing
     post_date = None
     try:
         post_date = datetime.strptime(
@@ -73,7 +87,7 @@ def parse_trial(study):
     return {
         "NCT": idm.get("nctId"),
         "Title": idm.get("officialTitle"),
-        "Phases": dm.get("phases") or [],   # ALWAYS LIST
+        "Phases": dm.get("phases") or [],   # always list
         "Status": sm.get("overallStatus"),
         "Sponsor": sp.get("leadSponsor", {}).get("name"),
         "SponsorType": sp.get("leadSponsor", {}).get("class"),
@@ -83,19 +97,20 @@ def parse_trial(study):
     }
 
 
-# --------------------------------------------------
-# PIPELINE TAB UI
-# --------------------------------------------------
+# -------------------------------
+# PIPELINE TAB
+# -------------------------------
 def pipeline_tab():
     st.header("🧠 Alzheimer’s Disease Clinical Trial Pipeline")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        phase = st.selectbox(
+        phase_label = st.selectbox(
             "Phase",
-            ["All", "PHASE_3", "PHASE_2", "PHASE_2_3", "PHASE_1", "EARLY_PHASE1"]
+            ["All"] + list(PHASE_LABELS.values())
         )
+        phase_filter = LABEL_TO_PHASE.get(phase_label)
 
     with col2:
         status = st.selectbox(
@@ -115,22 +130,17 @@ def pipeline_tab():
 
     st.divider()
 
-    # --------------------------------------------------
-    # LOAD & PARSE
-    # --------------------------------------------------
-    parsed = [parse_trial(t) for t in fetch_trials()]
+    trials = [parse_trial(t) for t in fetch_trials()]
 
-    # --------------------------------------------------
-    # FILTER LOGIC (FIXED)
-    # --------------------------------------------------
     filtered = []
-    for t in parsed:
+    for t in trials:
         if not t["PostDate"]:
             continue
 
-        # Phase filter (lenient, correct)
-        if phase != "All" and phase not in t["Phases"]:
-            continue
+        # Phase filter (handles missing phases)
+        if phase_label != "All":
+            if t["Phases"] and phase_filter not in t["Phases"]:
+                continue
 
         if status != "All" and t["Status"] != status:
             continue
@@ -143,9 +153,6 @@ def pipeline_tab():
 
         filtered.append(t)
 
-    # --------------------------------------------------
-    # OUTPUT
-    # --------------------------------------------------
     st.subheader(f"Filtered Trials ({len(filtered)})")
 
     if not filtered:
@@ -153,11 +160,16 @@ def pipeline_tab():
         return
 
     for t in filtered:
+        phase_display = (
+            ", ".join(PHASE_LABELS.get(p, p) for p in t["Phases"])
+            if t["Phases"] else "Not specified"
+        )
+
         st.markdown(f"### {t['Title']}")
         st.markdown(
             f"""
 **NCT ID:** {t['NCT']}  
-**Phase:** {', '.join(t['Phases']) if t['Phases'] else 'Not specified'}  
+**Phase:** {phase_display}  
 **Status:** {t['Status']}  
 **Enrollment:** {t['Enrollment']}  
 **Sponsor:** {t['Sponsor']}  
@@ -165,11 +177,11 @@ def pipeline_tab():
 """
         )
 
-        if t["Outcomes"]:
-            for o in t["Outcomes"].get("primaryOutcomes", []):
-                st.markdown(f"- **Primary:** {o.get('measure')} ({o.get('timeFrame')})")
-            for o in t["Outcomes"].get("secondaryOutcomes", []):
-                st.markdown(f"- **Secondary:** {o.get('measure')} ({o.get('timeFrame')})")
+        for o in t["Outcomes"].get("primaryOutcomes", []):
+            st.markdown(f"- **Primary:** {o.get('measure')} ({o.get('timeFrame')})")
+
+        for o in t["Outcomes"].get("secondaryOutcomes", []):
+            st.markdown(f"- **Secondary:** {o.get('measure')} ({o.get('timeFrame')})")
 
         st.markdown(
             f"[View on ClinicalTrials.gov]"
