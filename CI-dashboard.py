@@ -14,106 +14,174 @@ pipeline_tab, news_tab, congress_tab = st.tabs(["Pipeline", "News", "Congress Pl
 # ---------------- Pipeline Tab ----------------
 import streamlit as st
 import requests
-import pandas as pd
-import datetime
+from datetime import datetime, date
 
-with pipeline_tab:
-    st.header("Alzheimer's Disease Pipeline")
+BASE_URL = "https://clinicaltrials.gov/api/v2/studies"
 
-    # ---------------- INPUT FILTERS ----------------
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        phase = st.selectbox("Phase", ["All", "Phase 1", "Phase 2", "Phase 3"])
-    with col2:
-        status = st.selectbox("Recruitment Status", ["All", "Recruiting", "Completed", "Not yet recruiting", "Terminated"])
-    with col3:
-        sponsor_type = st.selectbox("Sponsor Type", ["All", "University/Hospital", "Industry"])
+# ---------------------------------------------------
+# FETCH ALL ALZHEIMER STUDIES (PAGINATED)
+# ---------------------------------------------------
+@st.cache_data(ttl=86400)
+def fetch_all_alzheimer_trials():
+    studies = []
+    next_page = None
 
-    col4, col5 = st.columns(2)
-    with col4:
-        from_date = st.date_input("From Date", value=datetime.date(2020, 1, 1))
-    with col5:
-        to_date = st.date_input("To Date", value=datetime.date.today())
+    while True:
+        params = {
+            "query.cond": "Alzheimer Disease",
+            "pageSize": 100,
+        }
+        if next_page:
+            params["pageToken"] = next_page
 
-    # ---------------- FETCH TRIAL LIST ----------------
-    base_url = "https://clinicaltrials.gov/api/v2/studies?query.term=Alzheimer%20Disease&pageSize=50"
+        resp = requests.get(BASE_URL, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        studies.extend(data.get("studies", []))
+        next_page = data.get("nextPageToken")
+
+        if not next_page:
+            break
+
+    return studies
+
+
+# ---------------------------------------------------
+# PARSE CORE FIELDS
+# ---------------------------------------------------
+def parse_study(study):
+    ps = study.get("protocolSection", {})
+
+    id_mod = ps.get("identificationModule", {})
+    status_mod = ps.get("statusModule", {})
+    sponsor_mod = ps.get("sponsorCollaboratorsModule", {})
+    design_mod = ps.get("designModule", {})
+    enroll_mod = ps.get("enrollmentModule", {})
+    outcomes_mod = ps.get("outcomesModule", {})
+
+    # Dates
     try:
-        response = requests.get(base_url, timeout=15)
-        response.raise_for_status()
-        trials = response.json()["studies"]
-    except Exception as e:
-        st.error(f"Failed to fetch trial list: {e}")
-        st.stop()
+        post_date = datetime.strptime(
+            status_mod.get("studyFirstPostDate", ""), "%Y-%m-%d"
+        ).date()
+    except:
+        post_date = None
 
-    st.subheader("Filtered Alzheimer’s Trials")
+    return {
+        "NCT": id_mod.get("nctId"),
+        "Title": id_mod.get("officialTitle"),
+        "Phase": ", ".join(design_mod.get("phases", [])),
+        "Status": status_mod.get("overallStatus"),
+        "Sponsor": sponsor_mod.get("leadSponsor", {}).get("name"),
+        "SponsorType": sponsor_mod.get("leadSponsor", {}).get("class"),
+        "Enrollment": enroll_mod.get("count"),
+        "PostDate": post_date,
+        "Outcomes": outcomes_mod,
+    }
 
-    for trial in trials:
-        try:
-            title = trial.get("briefTitle", "N/A")
-            nct_id = trial.get("nctId", "N/A")
-            phase_val = trial.get("phase", "N/A")
-            status_val = trial.get("status", "N/A")
-            sponsor = trial.get("sponsor", {}).get("name", "N/A")
-            start_date = trial.get("startDate", "N/A")
-            pcd = trial.get("primaryCompletionDate", "N/A")
-            scd = trial.get("completionDate", "N/A")
-            link = f"https://clinicaltrials.gov/study/{nct_id}"
 
-            # Convert start date
-            try:
-                post_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
-            except:
-                post_date = None
+# ---------------------------------------------------
+# PIPELINE TAB
+# ---------------------------------------------------
+def pipeline_tab():
+    st.header("🧠 Alzheimer’s Disease Clinical Trial Pipeline")
 
-            # Apply filters
-            if (phase == "All" or phase_val == phase) and \
-               (status == "All" or status_val == status) and \
-               (post_date and from_date <= post_date <= to_date):
+    col1, col2, col3 = st.columns(3)
 
-                # ---------------- FETCH OUTCOMES ----------------
-                detail_url = f"https://clinicaltrials.gov/api/v2/studies/{nct_id}"
-                try:
-                    detail = requests.get(detail_url, timeout=10).json()
-                    outcomes = []
-                    if "outcomes" in detail:
-                        if "primary" in detail["outcomes"]:
-                            for o in detail["outcomes"]["primary"]:
-                                outcomes.append(["Primary", o.get("measure", ""), o.get("timeFrame", "")])
-                        if "secondary" in detail["outcomes"]:
-                            for o in detail["outcomes"]["secondary"]:
-                                outcomes.append(["Secondary", o.get("measure", ""), o.get("timeFrame", "")])
-                except:
-                    outcomes = []
+    with col1:
+        phase = st.selectbox(
+            "Phase",
+            ["All", "EARLY_PHASE1", "PHASE1", "PHASE1_PHASE2",
+             "PHASE2", "PHASE2_PHASE3", "PHASE3"]
+        )
 
-                # ---------------- DISPLAY TRIAL CARD ----------------
-                with st.expander(f"{title} ({phase_val}, {status_val})"):
-                    st.markdown(f"**Trial Link:** [{nct_id}]({link})")
-                    st.write(f"**Start Date (SSD):** {start_date}")
-                    st.write(f"**Primary Completion Date (PCD):** {pcd}")
-                    st.write(f"**Study Completion Date (SCD):** {scd}")
-                    st.write(f"**Sponsor:** {sponsor}")
-                    if outcomes:
-                        df = pd.DataFrame(outcomes, columns=["Outcome Type", "Measure", "Time Frame"])
-                        st.dataframe(df, use_container_width=True)
-                    else:
-                        st.write("No outcomes reported.")
-        except:
+    with col2:
+        status = st.selectbox(
+            "Recruitment Status",
+            ["All", "NOT_YET_RECRUITING", "RECRUITING", "COMPLETED",
+             "WITHDRAWN", "TERMINATED", "SUSPENDED", "UNKNOWN"]
+        )
+
+    with col3:
+        sponsor_type = st.selectbox(
+            "Sponsor Type",
+            ["All", "INDUSTRY", "NIH", "OTHER"]
+        )
+
+    from_date = st.date_input("From Date", date(2020, 1, 1))
+    to_date = st.date_input("To Date", date(2025, 12, 31))
+
+    st.divider()
+
+    # ----------------------------
+    # LOAD DATA
+    # ----------------------------
+    raw_trials = fetch_all_alzheimer_trials()
+    parsed_trials = [parse_study(s) for s in raw_trials]
+
+    # ----------------------------
+    # APPLY FILTERS
+    # ----------------------------
+    filtered = []
+    for t in parsed_trials:
+        if not t["PostDate"]:
             continue
 
-    # ---------------- RECENT TRIALS ----------------
-    st.subheader("Trials Posted in Past 14 Days")
-    cutoff = datetime.date.today() - datetime.timedelta(days=14)
-    for trial in trials:
-        try:
-            title = trial.get("briefTitle", "N/A")
-            nct_id = trial.get("nctId", "N/A")
-            start_date = trial.get("startDate", None)
-            post_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
-            if post_date >= cutoff:
-                link = f"https://clinicaltrials.gov/study/{nct_id}"
-                st.markdown(f"- [{title}]({link}) (Posted: {post_date.strftime('%d-%b-%Y')})")
-        except:
+        if phase != "All" and phase not in (t["Phase"] or ""):
             continue
+        if status != "All" and status != t["Status"]:
+            continue
+        if sponsor_type != "All" and sponsor_type != t["SponsorType"]:
+            continue
+        if not (from_date <= t["PostDate"] <= to_date):
+            continue
+
+        filtered.append(t)
+
+    # ----------------------------
+    # OUTPUT (Pg2 STYLE)
+    # ----------------------------
+    st.subheader(f"Filtered Trials ({len(filtered)})")
+
+    if not filtered:
+        st.warning("No trials found for selected filters.")
+        return
+
+    for t in filtered:
+        st.markdown(f"### {t['Title']}")
+        st.markdown(
+            f"""
+**NCT ID:** {t['NCT']}  
+**Phase:** {t['Phase']}  
+**Status:** {t['Status']}  
+**Enrollment:** {t['Enrollment']}  
+**Sponsor:** {t['Sponsor']}  
+**First Posted:** {t['PostDate']}  
+"""
+        )
+
+        # Outcomes
+        outcomes = t["Outcomes"]
+        if outcomes:
+            st.markdown("**Outcomes**")
+            for o in outcomes.get("primaryOutcomes", []):
+                st.markdown(f"- **Primary:** {o.get('measure')} ({o.get('timeFrame')})")
+            for o in outcomes.get("secondaryOutcomes", []):
+                st.markdown(f"- **Secondary:** {o.get('measure')} ({o.get('timeFrame')})")
+
+        st.markdown(
+            f"[View on ClinicalTrials.gov]"
+            f"(https://clinicaltrials.gov/study/{t['NCT']})"
+        )
+        st.divider()
+
+
+# ---------------------------------------------------
+# RUN
+# ---------------------------------------------------
+pipeline_tab()
+
 
 
 
