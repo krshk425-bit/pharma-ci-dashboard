@@ -14,76 +14,78 @@ pipeline_tab, news_tab, congress_tab = st.tabs(["Pipeline", "News", "Congress Pl
 # ---------------- Pipeline Tab ----------------
 import streamlit as st
 import requests
-from datetime import datetime, date
+from datetime import date, datetime
 
 BASE_URL = "https://clinicaltrials.gov/api/v2/studies"
 
-# ---------------------------------------------------
-# FETCH ALL ALZHEIMER STUDIES (PAGINATED)
-# ---------------------------------------------------
+# --------------------------------------------------
+# FETCH ALL ALZHEIMER TRIALS (v2 API)
+# --------------------------------------------------
 @st.cache_data(ttl=86400)
-def fetch_all_alzheimer_trials():
-    studies = []
-    next_page = None
+def fetch_trials():
+    all_trials = []
+    token = None
 
     while True:
         params = {
             "query.cond": "Alzheimer Disease",
-            "pageSize": 100,
+            "pageSize": 100
         }
-        if next_page:
-            params["pageToken"] = next_page
+        if token:
+            params["pageToken"] = token
 
-        resp = requests.get(BASE_URL, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        r = requests.get(BASE_URL, params=params, timeout=30)
+        r.raise_for_status()
+        data = r.json()
 
-        studies.extend(data.get("studies", []))
-        next_page = data.get("nextPageToken")
+        all_trials.extend(data.get("studies", []))
+        token = data.get("nextPageToken")
 
-        if not next_page:
+        if not token:
             break
 
-    return studies
+    return all_trials
 
 
-# ---------------------------------------------------
-# PARSE CORE FIELDS
-# ---------------------------------------------------
-def parse_study(study):
+# --------------------------------------------------
+# SAFE PARSER
+# --------------------------------------------------
+def parse_trial(study):
     ps = study.get("protocolSection", {})
 
-    id_mod = ps.get("identificationModule", {})
-    status_mod = ps.get("statusModule", {})
-    sponsor_mod = ps.get("sponsorCollaboratorsModule", {})
-    design_mod = ps.get("designModule", {})
-    enroll_mod = ps.get("enrollmentModule", {})
-    outcomes_mod = ps.get("outcomesModule", {})
+    idm = ps.get("identificationModule", {})
+    sm = ps.get("statusModule", {})
+    dm = ps.get("designModule", {})
+    sp = ps.get("sponsorCollaboratorsModule", {})
+    em = ps.get("enrollmentModule", {})
+    om = ps.get("outcomesModule", {})
 
-    # Dates
+    # Date
+    post_date = None
     try:
         post_date = datetime.strptime(
-            status_mod.get("studyFirstPostDate", ""), "%Y-%m-%d"
+            sm.get("studyFirstPostDate", ""),
+            "%Y-%m-%d"
         ).date()
     except:
-        post_date = None
+        pass
 
     return {
-        "NCT": id_mod.get("nctId"),
-        "Title": id_mod.get("officialTitle"),
-        "Phase": ", ".join(design_mod.get("phases", [])),
-        "Status": status_mod.get("overallStatus"),
-        "Sponsor": sponsor_mod.get("leadSponsor", {}).get("name"),
-        "SponsorType": sponsor_mod.get("leadSponsor", {}).get("class"),
-        "Enrollment": enroll_mod.get("count"),
+        "NCT": idm.get("nctId"),
+        "Title": idm.get("officialTitle"),
+        "Phase": dm.get("phases", []),  # LIST
+        "Status": sm.get("overallStatus"),
+        "Sponsor": sp.get("leadSponsor", {}).get("name"),
+        "SponsorType": sp.get("leadSponsor", {}).get("class"),
+        "Enrollment": em.get("count"),
         "PostDate": post_date,
-        "Outcomes": outcomes_mod,
+        "Outcomes": om,
     }
 
 
-# ---------------------------------------------------
+# --------------------------------------------------
 # PIPELINE TAB
-# ---------------------------------------------------
+# --------------------------------------------------
 def pipeline_tab():
     st.header("🧠 Alzheimer’s Disease Clinical Trial Pipeline")
 
@@ -92,15 +94,14 @@ def pipeline_tab():
     with col1:
         phase = st.selectbox(
             "Phase",
-            ["All", "EARLY_PHASE1", "PHASE1", "PHASE1_PHASE2",
-             "PHASE2", "PHASE2_PHASE3", "PHASE3"]
+            ["All", "PHASE_3", "PHASE_2", "PHASE_2_3", "PHASE_1", "EARLY_PHASE1"]
         )
 
     with col2:
         status = st.selectbox(
             "Recruitment Status",
-            ["All", "NOT_YET_RECRUITING", "RECRUITING", "COMPLETED",
-             "WITHDRAWN", "TERMINATED", "SUSPENDED", "UNKNOWN"]
+            ["All", "Not yet recruiting", "Recruiting", "Completed",
+             "Withdrawn", "Terminated", "Suspended"]
         )
 
     with col3:
@@ -114,34 +115,30 @@ def pipeline_tab():
 
     st.divider()
 
-    # ----------------------------
-    # LOAD DATA
-    # ----------------------------
-    raw_trials = fetch_all_alzheimer_trials()
-    parsed_trials = [parse_study(s) for s in raw_trials]
+    # LOAD
+    trials = [parse_trial(t) for t in fetch_trials()]
 
-    # ----------------------------
-    # APPLY FILTERS
-    # ----------------------------
+    # FILTER
     filtered = []
-    for t in parsed_trials:
+    for t in trials:
         if not t["PostDate"]:
             continue
 
-        if phase != "All" and phase not in (t["Phase"] or ""):
+        if phase != "All" and phase not in t["Phase"]:
             continue
+
         if status != "All" and status != t["Status"]:
             continue
+
         if sponsor_type != "All" and sponsor_type != t["SponsorType"]:
             continue
+
         if not (from_date <= t["PostDate"] <= to_date):
             continue
 
         filtered.append(t)
 
-    # ----------------------------
-    # OUTPUT (Pg2 STYLE)
-    # ----------------------------
+    # OUTPUT
     st.subheader(f"Filtered Trials ({len(filtered)})")
 
     if not filtered:
@@ -153,7 +150,7 @@ def pipeline_tab():
         st.markdown(
             f"""
 **NCT ID:** {t['NCT']}  
-**Phase:** {t['Phase']}  
+**Phase:** {', '.join(t['Phase'])}  
 **Status:** {t['Status']}  
 **Enrollment:** {t['Enrollment']}  
 **Sponsor:** {t['Sponsor']}  
@@ -161,25 +158,19 @@ def pipeline_tab():
 """
         )
 
-        # Outcomes
-        outcomes = t["Outcomes"]
-        if outcomes:
-            st.markdown("**Outcomes**")
-            for o in outcomes.get("primaryOutcomes", []):
-                st.markdown(f"- **Primary:** {o.get('measure')} ({o.get('timeFrame')})")
-            for o in outcomes.get("secondaryOutcomes", []):
-                st.markdown(f"- **Secondary:** {o.get('measure')} ({o.get('timeFrame')})")
+        for o in t["Outcomes"].get("primaryOutcomes", []):
+            st.markdown(f"- **Primary:** {o.get('measure')} ({o.get('timeFrame')})")
+
+        for o in t["Outcomes"].get("secondaryOutcomes", []):
+            st.markdown(f"- **Secondary:** {o.get('measure')} ({o.get('timeFrame')})")
 
         st.markdown(
-            f"[View on ClinicalTrials.gov]"
+            f"[ClinicalTrials.gov]"
             f"(https://clinicaltrials.gov/study/{t['NCT']})"
         )
         st.divider()
 
 
-# ---------------------------------------------------
-# RUN
-# ---------------------------------------------------
 pipeline_tab()
 
 
