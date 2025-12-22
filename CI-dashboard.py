@@ -19,11 +19,11 @@ from datetime import date, datetime
 BASE_URL = "https://clinicaltrials.gov/api/v2/studies"
 
 # --------------------------------------------------
-# FETCH ALL ALZHEIMER TRIALS (v2 API)
+# FETCH ALL ALZHEIMER TRIALS (v2 API, PAGINATED)
 # --------------------------------------------------
 @st.cache_data(ttl=86400)
 def fetch_trials():
-    all_trials = []
+    trials = []
     token = None
 
     while True:
@@ -38,17 +38,17 @@ def fetch_trials():
         r.raise_for_status()
         data = r.json()
 
-        all_trials.extend(data.get("studies", []))
+        trials.extend(data.get("studies", []))
         token = data.get("nextPageToken")
 
         if not token:
             break
 
-    return all_trials
+    return trials
 
 
 # --------------------------------------------------
-# SAFE PARSER
+# SAFE PARSER (NO CRASHES)
 # --------------------------------------------------
 def parse_trial(study):
     ps = study.get("protocolSection", {})
@@ -60,7 +60,7 @@ def parse_trial(study):
     em = ps.get("enrollmentModule", {})
     om = ps.get("outcomesModule", {})
 
-    # Date
+    # Date parsing
     post_date = None
     try:
         post_date = datetime.strptime(
@@ -73,7 +73,7 @@ def parse_trial(study):
     return {
         "NCT": idm.get("nctId"),
         "Title": idm.get("officialTitle"),
-        "Phase": dm.get("phases", []),  # LIST
+        "Phases": dm.get("phases") or [],   # ALWAYS LIST
         "Status": sm.get("overallStatus"),
         "Sponsor": sp.get("leadSponsor", {}).get("name"),
         "SponsorType": sp.get("leadSponsor", {}).get("class"),
@@ -84,7 +84,7 @@ def parse_trial(study):
 
 
 # --------------------------------------------------
-# PIPELINE TAB
+# PIPELINE TAB UI
 # --------------------------------------------------
 def pipeline_tab():
     st.header("🧠 Alzheimer’s Disease Clinical Trial Pipeline")
@@ -115,22 +115,27 @@ def pipeline_tab():
 
     st.divider()
 
-    # LOAD
-    trials = [parse_trial(t) for t in fetch_trials()]
+    # --------------------------------------------------
+    # LOAD & PARSE
+    # --------------------------------------------------
+    parsed = [parse_trial(t) for t in fetch_trials()]
 
-    # FILTER
+    # --------------------------------------------------
+    # FILTER LOGIC (FIXED)
+    # --------------------------------------------------
     filtered = []
-    for t in trials:
+    for t in parsed:
         if not t["PostDate"]:
             continue
 
-        if phase != "All" and phase not in t["Phase"]:
+        # Phase filter (lenient, correct)
+        if phase != "All" and phase not in t["Phases"]:
             continue
 
-        if status != "All" and status != t["Status"]:
+        if status != "All" and t["Status"] != status:
             continue
 
-        if sponsor_type != "All" and sponsor_type != t["SponsorType"]:
+        if sponsor_type != "All" and t["SponsorType"] != sponsor_type:
             continue
 
         if not (from_date <= t["PostDate"] <= to_date):
@@ -138,7 +143,9 @@ def pipeline_tab():
 
         filtered.append(t)
 
+    # --------------------------------------------------
     # OUTPUT
+    # --------------------------------------------------
     st.subheader(f"Filtered Trials ({len(filtered)})")
 
     if not filtered:
@@ -150,7 +157,7 @@ def pipeline_tab():
         st.markdown(
             f"""
 **NCT ID:** {t['NCT']}  
-**Phase:** {', '.join(t['Phase'])}  
+**Phase:** {', '.join(t['Phases']) if t['Phases'] else 'Not specified'}  
 **Status:** {t['Status']}  
 **Enrollment:** {t['Enrollment']}  
 **Sponsor:** {t['Sponsor']}  
@@ -158,14 +165,14 @@ def pipeline_tab():
 """
         )
 
-        for o in t["Outcomes"].get("primaryOutcomes", []):
-            st.markdown(f"- **Primary:** {o.get('measure')} ({o.get('timeFrame')})")
-
-        for o in t["Outcomes"].get("secondaryOutcomes", []):
-            st.markdown(f"- **Secondary:** {o.get('measure')} ({o.get('timeFrame')})")
+        if t["Outcomes"]:
+            for o in t["Outcomes"].get("primaryOutcomes", []):
+                st.markdown(f"- **Primary:** {o.get('measure')} ({o.get('timeFrame')})")
+            for o in t["Outcomes"].get("secondaryOutcomes", []):
+                st.markdown(f"- **Secondary:** {o.get('measure')} ({o.get('timeFrame')})")
 
         st.markdown(
-            f"[ClinicalTrials.gov]"
+            f"[View on ClinicalTrials.gov]"
             f"(https://clinicaltrials.gov/study/{t['NCT']})"
         )
         st.divider()
